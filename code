@@ -1,0 +1,61 @@
+library(caret)
+library(dplyr)
+library(randomForest)
+library(ROCR)
+library(rpart)
+install.packages("cutpointr")
+library(cutpointr)
+set.seed(71)
+
+
+setwd("H:/random/311")
+
+#read in data
+data_311 <- read.csv('311_Service_Requests_from_2010_to_Present.csv') 
+
+#######analysis to predict whether a 311 request is will be opened or closed after 1 month and which factors affect that status most
+#datset is very large, reduce size and reduce number of variables
+data_311_april_may <- data_311 %>% 
+filter(Created.Date >'04/11/2023') %>%  #just look at 311 requests that are a month old
+  select(Agency,Complaint.Type,City,Status) %>% 
+  mutate(Status=ifelse(Status=='Closed',1,0)) %>%  #status is the variable we want to explore, make it numeric
+  filter((City != '')) #a few hundred records as missing city, get rid of them, less than .1% of records
+
+#reduce to workable size for random forest
+data_311_april_may_less <- sample_n(data_311_april_may, 10000)
+
+#create train and test
+train <- data_311_april_may_less[1:8000,]
+test <- data_311_april_may_less[8001:10000,]
+
+#run random forest
+rf <-randomForest(Status~.,data=train, ntree=500) 
+print(rf)
+importance(rf)
+varImpPlot(rf) # agency is most important, followed by complaint type, followed by city
+
+#use random forest to predict 311 work order status
+test$predicted_value <- predict(rf,test)
+
+
+#from here https://cran.r-project.org/web/packages/cutpointr/vignettes/cutpointr.html
+cp <- cutpointr(test, predicted_value, Status, 
+                method = maximize_metric, metric = sum_sens_spec)
+summary(cp)
+plot(cp)
+#says .74 is the best cutoff, but a confusion matrix says otherwise, .57 is best after trying multiple cutoffs
+
+#created 0 1 out of predicted value which on a continuous scale between 0 and 1
+test <- test %>% 
+  mutate(rounded_predict=ifelse(predicted_value>.57,1,0)) #.57 gets best split of false positive and false negative with an accuracy of 75%. can get an 80% accuracy with with a .42 cutoff 
+  #but the errors are very skewed toward false negative
+
+#turn status and predicted value into factors for confusion matrix
+rounded_predict <- factor(test$rounded_predict)
+Status <- factor(test$Status)
+
+#create confusion matrix to assess prediction
+#from here https://www.digitalocean.com/community/tutorials/confusion-matrix-in-r
+confusion_matrix <- confusionMatrix(data=rounded_predict, reference = Status)
+confusion_matrix #80% accurate at the .42 threshold of predicted value. .57 curoff gets best split of false positive and false negative with an accuracy of 75%
+
